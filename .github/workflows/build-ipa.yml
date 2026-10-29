@@ -94,6 +94,7 @@ jobs:
           unzip -l build/Insta.ipa | grep -F "Payload/Insta.app/Info.plist"
           unzip -l build/Insta.ipa | grep -F "Payload/Insta.app/bridge.js"
           unzip -l build/Insta.ipa | grep -F "Payload/Insta.app/fallback-config.json"
+          unzip -l build/Insta.ipa | grep -F "Payload/Insta.app/Assets.car"
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4

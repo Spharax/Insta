@@ -304,7 +304,7 @@ Back and the settings slider sit on the right edge, midway down, so they do not 
 | --- | --- |
 | Scheme Insta is not configured | `xcodegen` did not write the file `Insta.xcodeproj/xcshareddata/xcschemes/Insta.xcscheme`. The workflow checks that file with `test -f`. Confirm `schemes:` in `project.yml` is named `Insta`. |
 | `requires a development team` | Signing was still on. The project sets `CODE_SIGNING_ALLOWED` to NO and the archive step passes the same setting. Don't add `-exportArchive`. |
-| `bridge.js` or `fallback-config.json` missing from `unzip -l` | The resource was not in the Copy Bundle Resources phase. Both files are listed under `resources:` in `project.yml`. The log prints the full zip listing just before the grep. |
+| `bridge.js`, `fallback-config.json`, or `Assets.car` missing from `unzip -l` | XcodeGen ignored a target-level `resources:` key. Those files are source entries with `buildPhase: resources` in `project.yml`. |
 | IPA grep cannot find `Payload/Insta.app/Info.plist` | The zip was built from the wrong directory. The script `cd`s into `build` and zips `Payload`, so `Payload` is at the root of the archive. |
 | Mach-O platform is not `2` | The archive was a simulator build. `-destination 'generic/platform=iOS'` is required. Platform `7` is the simulator. |
 | `setup-xcode` cannot find latest-stable | The "List installed Xcode apps" step prints `/Applications/Xcode*.app`. Pin `xcode-version` in the workflow to one of those names (for example `16.4`). |

@@ -32,9 +32,13 @@ targets:
       - path: Insta
         excludes:
           - "Resources/**"
-    resources:
-      - path: Insta/Resources/fallback-config.json
+      # XcodeGen has no target-level `resources` key. These must be sources
+      # with an explicit resources build phase, or they are left out of the
+      # bundle. Bundle.main looks them up at the app root, not in a folder.
       - path: Insta/Resources/bridge.js
+        buildPhase: resources
+      - path: Insta/Resources/fallback-config.json
+        buildPhase: resources
       - path: Insta/Resources/Assets.xcassets
     settings:
       base:
