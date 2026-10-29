@@ -286,8 +286,9 @@ struct InstagramWebView: UIViewRepresentable {
             if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
                 return true
             }
-            if nsError.domain == WKErrorDomain
-                && nsError.code == WKError.Code.frameLoadInterruptedByPolicyChange.rawValue {
+            // WKError.Code.frameLoadInterruptedByPolicyChange is 102.
+            // The Swift case is not in the Xcode 26 overlay, so compare the code.
+            if nsError.domain == WKErrorDomain && nsError.code == 102 {
                 return true
             }
             return false
