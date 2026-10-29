@@ -87,9 +87,10 @@ final class ConfigStore: ObservableObject {
     private func saveCache(_ config: AppConfig) {
         guard let url = ConfigStore.cacheFileURL() else { return }
         do {
+            let envelope = CacheEnvelope(bundleVersion: ConfigStore.bundleStamp(), config: config)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(config)
+            let data = try encoder.encode(envelope)
             try data.write(to: url, options: [.atomic])
         } catch {
             logger.error("Could not write the config cache")
@@ -117,7 +118,13 @@ final class ConfigStore: ObservableObject {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         do {
             let data = try Data(contentsOf: url)
-            let cached = try AppConfig.decodeAndValidate(from: data)
+            let envelope = try JSONDecoder().decode(CacheEnvelope.self, from: data)
+            guard envelope.bundleVersion == bundleStamp() else {
+                Logger(subsystem: AppConstants.bundleIdentifier, category: "config")
+                    .info("Ignored config cache from another app version")
+                return
+            }
+            let cached = try AppConfig.decodeAndValidate(from: try JSONEncoder().encode(envelope.config))
             config = cached
             source = "cache"
             status = "Loaded cached config \(cached.configVersion)."
@@ -125,6 +132,19 @@ final class ConfigStore: ObservableObject {
             Logger(subsystem: AppConstants.bundleIdentifier, category: "config")
                 .error("Ignored unreadable config cache")
         }
+    }
+
+    /// Ties the cache to this binary so an update's bundled JSON wins until a fetch succeeds.
+    private static func bundleStamp() -> String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "0"
+        let build = info?["CFBundleVersion"] as? String ?? "0"
+        return short + "(" + build + ")"
+    }
+
+    private struct CacheEnvelope: Codable {
+        var bundleVersion: String
+        var config: AppConfig
     }
 
     private static func cacheFileURL() -> URL? {

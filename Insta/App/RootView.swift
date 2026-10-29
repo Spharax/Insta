@@ -6,6 +6,7 @@ struct RootView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var reloadToken = 0
+    @State private var backToken = 0
     @State private var showControls = false
 
     var body: some View {
@@ -14,7 +15,8 @@ struct RootView: View {
                 store: store,
                 isLoading: $isLoading,
                 errorMessage: $errorMessage,
-                reloadToken: reloadToken
+                reloadToken: reloadToken,
+                backToken: backToken
             )
 
             if isLoading && errorMessage == nil {
@@ -29,18 +31,35 @@ struct RootView: View {
                 errorCard(errorMessage)
             }
 
-            Button {
-                showControls = true
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.footnote.weight(.semibold))
-                    .padding(8)
-                    .background(.ultraThinMaterial, in: Circle())
+            VStack {
+                Spacer()
+                VStack(spacing: 10) {
+                    Button {
+                        backToken += 1
+                    } label: {
+                        Image(systemName: "chevron.backward")
+                            .font(.footnote.weight(.semibold))
+                            .padding(8)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Back")
+
+                    Button {
+                        showControls = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.footnote.weight(.semibold))
+                            .padding(8)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Insta settings")
+                }
+                Spacer()
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Insta settings")
-            .padding(.leading, 8)
-            .padding(.top, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            .padding(.trailing, 8)
         }
         .sheet(isPresented: $showControls) {
             ControlsSheet(store: store) {
@@ -91,7 +110,7 @@ private struct ControlsSheet: View {
                 Section {
                     Toggle("Restrictions", isOn: $store.rulesEnabled)
                 } footer: {
-                    Text("Turn this off to see Instagram's normal UI while you inspect it. Redirects, feed hiding, and the reel lock pause until you turn it back on.")
+                    Text("Turn this off to see Instagram's normal UI while you inspect it. Native redirects, feed hiding, and the reel lock pause until you turn it back on.")
                 }
                 Section("Rules") {
                     LabeledContent("Version", value: store.config.configVersion)

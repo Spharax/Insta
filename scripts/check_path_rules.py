@@ -58,6 +58,9 @@ def normalize(path):
         return "/"
     if not path.startswith("/"):
         path = "/" + path
+    while "//" in path:
+        path = path.replace("//", "/")
+    path = path.lower()
     while len(path) > 1 and path.endswith("/"):
         path = path[:-1]
     return path
@@ -98,7 +101,7 @@ def allow_patterns(config, safety):
     return patterns
 
 
-def decide(raw_path, config, safety):
+def decide(raw_path, config, safety, reels_browse, explore_tree):
     path = normalize(raw_path)
     target = normalize(config["redirect"]["targetPath"])
     reels = config["reels"]
@@ -106,9 +109,14 @@ def decide(raw_path, config, safety):
     profile = config["profile"]
     if path == target:
         return "allow"
-    if reels.get("blockFeed", True) and full_match(reels["feedPathPattern"], path):
+    if matches_any(safety, path):
+        return "allow"
+    feed = reels.get("feedPathPattern") or "^/reels$"
+    if reels.get("blockFeed", True) and (path == "/reels" or full_match(feed, path)):
         return "block"
-    if not reels.get("allowIdPaths", True) and full_match(reels["idPathPattern"], path):
+    if matches_any(reels_browse, path):
+        return "block"
+    if not reels.get("allowIdPaths", True) and full_match(reels.get("idPathPattern") or "", path):
         return "block"
     if matches_any(allow_patterns(config, safety), path):
         return "allow"
@@ -121,6 +129,8 @@ def decide(raw_path, config, safety):
         return "block"
     mode = explore.get("mode") or "hideGridKeepSearch"
     if mode == "blockAll" and matches_any(explore.get("alwaysAllowPathPatterns") or [], path):
+        return "block"
+    if matches_any(explore_tree, path):
         return "block"
     if matches_any(config.get("blockedPaths") or [], path):
         return "block"
@@ -136,6 +146,16 @@ def main():
         print("swift", swift)
         print("js", js)
         return 1
+    swift_browse = extract_quoted_block(SWIFT_PATH.read_text(), "static let reelsBrowsePatterns")
+    js_browse = extract_quoted_block(JS_PATH.read_text(), "var REELS_BROWSE_FALLBACK")
+    if swift_browse != js_browse:
+        print("reels browse lists differ")
+        return 1
+    swift_explore = extract_quoted_block(SWIFT_PATH.read_text(), "static let exploreTreePatterns")
+    js_explore = extract_quoted_block(JS_PATH.read_text(), "var EXPLORE_TREE_FALLBACK")
+    if swift_explore != js_explore:
+        print("explore tree lists differ")
+        return 1
 
     base_cases = [
         ("/", "allow"),
@@ -143,7 +163,14 @@ def main():
         ("/?variant=favorites", "allow"),
         ("/reels/", "block"),
         ("/reels", "block"),
+        ("/Reels", "block"),
+        ("/Reels/", "block"),
+        ("//reels", "block"),
+        ("//reels/", "block"),
         ("/reels/ABC123/", "allow"),
+        ("/reels/audio", "block"),
+        ("/reels/audio/123", "block"),
+        ("/reels/abc/extra", "block"),
         ("/reel/ABC123/", "allow"),
         ("/reel/ABC123", "allow"),
         ("/someuser/reel/ABC123/", "allow"),
@@ -151,9 +178,12 @@ def main():
         ("/someuser", "allow"),
         ("/someuser/reels/", "block"),
         ("/someuser/reels", "block"),
+        ("/SOMEUSER/Reels/", "block"),
         ("/explore/", "allow"),
         ("/explore/search/", "allow"),
         ("/explore/search/keyword/", "allow"),
+        ("/explore/people/", "block"),
+        ("/explore/foo/bar", "block"),
         ("/explore/tags/cats/", "block"),
         ("/explore/locations/12345/", "block"),
         ("/stories/someuser/123/", "allow"),
@@ -168,11 +198,10 @@ def main():
         ("/consent/", "allow"),
         ("/p/ABC123/", "allow"),
         ("/reel/", "allow"),
-        ("/reels/abc/extra", "allow"),
     ]
     failures = 0
     for path, expected in base_cases:
-        got = decide(path, config, swift)
+        got = decide(path, config, swift, swift_browse, swift_explore)
         if got != expected:
             print(f"FAIL {path}: got {got}, expected {expected}")
             failures += 1
@@ -187,34 +216,50 @@ def main():
         ("/", "allow"),
         ("/reel/ABC/", "allow"),
     ]:
-        got = decide(path, blocked_explore, swift)
+        got = decide(path, blocked_explore, swift, swift_browse, swift_explore)
         if got != expected:
             print(f"FAIL blockAll {path}: got {got}, expected {expected}")
             failures += 1
 
     no_id = json.loads(json.dumps(config))
     no_id["reels"]["allowIdPaths"] = False
-    if decide("/reels/ABC/", no_id, swift) != "block":
+    if decide("/reels/ABC/", no_id, swift, swift_browse, swift_explore) != "block":
         print("FAIL allowIdPaths false should block /reels/<id>")
         failures += 1
-    if decide("/reel/ABC/", no_id, swift) != "allow":
+    if decide("/reel/ABC/", no_id, swift, swift_browse, swift_explore) != "allow":
         print("FAIL allowIdPaths false must still allow /reel/<id>")
         failures += 1
 
     show_tab = json.loads(json.dumps(config))
     show_tab["profile"]["hideReelsTab"] = False
-    if decide("/someuser/reels/", show_tab, swift) != "allow":
+    if decide("/someuser/reels/", show_tab, swift, swift_browse, swift_explore) != "allow":
         print("FAIL hideReelsTab false should allow the profile tab")
         failures += 1
 
-    # A username-style allow must not unblock the feed. The feed check is first.
+    # A username-style allow must not unblock the feed. The feed check is before allows.
     broad = json.loads(json.dumps(config))
     broad["allowedPaths"] = list(broad["allowedPaths"]) + ["^/[^/]+$"]
-    if decide("/reels/", broad, swift) != "block":
+    if decide("/reels/", broad, swift, swift_browse, swift_explore) != "block":
         print("FAIL broad allow regex unblocked the Reels feed")
         failures += 1
-    if decide("/reel/", broad, swift) != "allow":
+    if decide("/reel/", broad, swift, swift_browse, swift_explore) != "allow":
         print("FAIL /reel/ should not be treated as the feed")
+        failures += 1
+
+    # A feed or id pattern must not beat the hardcoded safety list.
+    hijack = json.loads(json.dumps(config))
+    hijack["reels"]["feedPathPattern"] = "^/direct.*"
+    if decide("/direct/inbox/", hijack, swift, swift_browse, swift_explore) != "allow":
+        print("FAIL feed pattern blocked DMs")
+        failures += 1
+    if decide("/reels/", hijack, swift, swift_browse, swift_explore) != "block":
+        print("FAIL literal /reels should stay blocked when blockFeed is on")
+        failures += 1
+    hijack_id = json.loads(json.dumps(config))
+    hijack_id["reels"]["allowIdPaths"] = False
+    hijack_id["reels"]["idPathPattern"] = "^/accounts.*"
+    if decide("/accounts/login/", hijack_id, swift, swift_browse, swift_explore) != "allow":
+        print("FAIL id pattern blocked login")
         failures += 1
 
     if failures:

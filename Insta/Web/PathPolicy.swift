@@ -6,7 +6,9 @@ enum RouteDecision: Equatable {
 }
 
 enum PathNormalizer {
-    /// Trailing slashes are removed except for `/`. Query and fragment are ignored.
+    /// Query and fragment are ignored. Repeated slashes collapse, so `//reels`
+    /// is `/reels`. Matching is case-insensitive because the result is lowercased.
+    /// Trailing slashes are removed except for `/`.
     static func normalize(_ path: String) -> String {
         var p = path
         if let hash = p.firstIndex(of: "#") {
@@ -21,20 +23,80 @@ enum PathNormalizer {
         if !p.hasPrefix("/") {
             p = "/" + p
         }
+        while p.contains("//") {
+            p = p.replacingOccurrences(of: "//", with: "/")
+        }
+        p = p.lowercased()
         while p.count > 1 && p.hasSuffix("/") {
             p.removeLast()
         }
         return p
     }
+
+    /// Rejects protocol-relative targets (`//evil.com`) before slash collapsing.
+    /// `location.replace("//evil.com")` would leave the origin.
+    static func isSafeRedirectTarget(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "/" {
+            return true
+        }
+        if !trimmed.hasPrefix("/") || trimmed.hasPrefix("//") {
+            return false
+        }
+        if trimmed.contains("//") || trimmed.contains("\\") || trimmed.contains(":") {
+            return false
+        }
+        if trimmed.contains(" ") || trimmed.contains("\t") || trimmed.contains("\n") || trimmed.contains("\r") {
+            return false
+        }
+        return true
+    }
 }
 
 /// Same order as `classify` in bridge.js and scripts/check_path_rules.py.
-/// Allow rules beat block rules, except the exact Reels feed (`^/reels$` by default),
-/// which is blocked before the allow list so a username-style pattern cannot permit it.
+/// Hardcoded safety paths are allowed before any configurable block pattern,
+/// so a feed or id regex cannot send `/direct` or `/accounts` home.
+/// The literal Reels feed (`/reels`) is still blocked when `blockFeed` is on,
+/// before the configurable allow list, so a username-style allow cannot permit it.
 struct PathPolicy {
+    /// KEEP IN SYNC with REELS_BROWSE_FALLBACK in bridge.js.
+    static let reelsBrowsePatterns: [String] = [
+        "^/reels/audio(?:/.*)?$",
+        "^/reels/[^/]+/.+"
+    ]
+
+    /// KEEP IN SYNC with EXPLORE_TREE_FALLBACK in bridge.js.
+    /// Applied only after the allow list, so `/explore` and `/explore/search` stay open.
+    static let exploreTreePatterns: [String] = [
+        "^/explore(?:/.*)?$"
+    ]
+
+    /// Paths a configurable early pattern must not full-match.
+    /// Used only by ConfigValidator, not by decision().
+    static let safetySentinels: [String] = [
+        "/",
+        "/accounts",
+        "/accounts/login",
+        "/accounts/login/two_factor",
+        "/challenge/abc",
+        "/consent",
+        "/direct",
+        "/direct/inbox",
+        "/direct/t/123",
+        "/stories/someuser/123",
+        "/emails/verify",
+        "/legal",
+        "/privacy",
+        "/terms",
+        "/about",
+        "/oauth/authorize",
+        "/reel/abc",
+        "/someuser/reel/abc",
+        "/p/abc"
+    ]
     /// Remote config cannot remove these. They keep login, DMs, Stories, and
-    /// individual reels reachable even if `allowedPaths` is emptied or too broad a block is added.
-    /// `/reels/<id>` is intentionally not here; `reels.allowIdPaths` controls it.
+    /// individual reels reachable even if `allowedPaths` is emptied or a feed
+    /// pattern is pointed at them. Checked before feed and id patterns.
     /// KEEP IN SYNC with SAFETY_FALLBACK in bridge.js.
     static let safetyAllowPatterns: [String] = [
         "^/accounts(?:/.*)?$",
@@ -77,6 +139,8 @@ struct PathPolicy {
         patterns.append(contentsOf: config.blockedPaths)
         patterns.append(config.reels.feedPathPattern)
         patterns.append(config.reels.idPathPattern)
+        patterns.append(contentsOf: reelsBrowsePatterns)
+        patterns.append(contentsOf: exploreTreePatterns)
         patterns.append(config.reels.allowReelPathPattern)
         patterns.append(config.reels.allowUserReelPathPattern)
         patterns.append(config.reels.postPathPattern)
@@ -95,51 +159,70 @@ struct PathPolicy {
             return .allow
         }
 
-        // 2. Exact Reels feed, before any allow regex.
-        if config.reels.blockFeed && matches(config.reels.feedPathPattern, path) {
+        // 2. Hardcoded safety paths beat a mistyped feed or id pattern.
+        if matchesAny(Self.safetyAllowPatterns, path) {
+            return .allow
+        }
+
+        // 3. Reels feed, before any configurable allow regex.
+        if config.reels.blockFeed && (path == "/reels" || matches(config.reels.feedPathPattern, path)) {
             return .redirectHome
         }
 
-        // 3. `/reels/<id>` when that form is configured off.
+        // 4. Reels listings that are not one reel id: /reels/audio/<id>, /reels/<id>/extra.
+        if matchesAny(Self.reelsBrowsePatterns, path) {
+            return .redirectHome
+        }
+
+        // 5. `/reels/<id>` when that form is configured off.
         if !config.reels.allowIdPaths && matches(config.reels.idPathPattern, path) {
             return .redirectHome
         }
 
-        // 4. Safety + configured allows, including individual reel patterns.
+        // 6. Safety + configured allows, including individual reel patterns.
         if matchesAny(allowPatterns(), path) {
             return .allow
         }
 
-        // 5. Profile Reels tab.
+        // 7. Profile Reels tab.
         if config.profile.hideReelsTab && matches(config.profile.reelsTabPathPattern, path) {
             return .redirectHome
         }
 
-        // 6. Explore hashtag and location browse.
+        // 8. Explore hashtag and location browse.
         if matchesAny(config.explore.blockBrowsePathPatterns, path) {
             return .redirectHome
         }
 
-        // 7. Entire Explore tree, only in blockAll mode.
+        // 9. Entire Explore tree, only in blockAll mode.
         if config.explore.mode == .blockAll && matchesAny(config.explore.alwaysAllowPathPatterns, path) {
             return .redirectHome
         }
 
-        // 8. Extra block regexes.
+        // 10. Any other /explore path. Search and the bare explore page were allowed in step 6.
+        if matchesAny(Self.exploreTreePatterns, path) {
+            return .redirectHome
+        }
+
+        // 11. Extra block regexes.
         if matchesAny(config.blockedPaths, path) {
             return .redirectHome
         }
 
-        // 9. Profiles and anything unknown stay available.
+        // 12. Profiles and anything unknown stay available.
         return .allow
     }
 
     func redirectURL() -> URL? {
-        var path = PathNormalizer.normalize(config.redirect.targetPath)
-        if matches(config.reels.feedPathPattern, path) {
+        let stored = config.redirect.targetPath
+        var path = "/"
+        if PathNormalizer.isSafeRedirectTarget(stored) {
+            path = PathNormalizer.normalize(stored)
+        }
+        if path == "/reels" || matches(config.reels.feedPathPattern, path) {
             path = "/"
         }
-        if !path.hasPrefix("/") {
+        if !PathNormalizer.isSafeRedirectTarget(path) {
             path = "/"
         }
         let absolute = "https://www.instagram.com" + (path == "/" ? "/" : path)

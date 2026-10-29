@@ -21,7 +21,7 @@ This repository has no `.xcodeproj`. GitHub Actions generates it with XcodeGen a
 
 ## Fragility
 
-Instagram's web UI is a moving target. Class names, `aria-label`s, and route shapes change without notice. When something breaks, use Safari Web Inspector (this web view sets `isInspectable = true` on iOS 16.4+) from a Mac: Develop → your iPhone → Insta. You can also use desktop DevTools with a phone-sized window and the user agent in `Insta/App/AppConstants.swift`. Then edit the JSON. Do not delete React-managed nodes; this app only hides them.
+Instagram's web UI is a moving target. Class names, `aria-label`s, and route shapes change without notice. When something breaks, use desktop DevTools with a phone-sized window and the user agent in `Insta/App/AppConstants.swift`. A Debug build also sets `isInspectable = true` (iOS 16.4+) so Safari's Develop menu can attach. The GitHub Actions archive is Release, so the IPA you sideload is not inspectable. Then edit the JSON. Do not delete React-managed nodes; this app only hides them.
 
 ## What you get
 
@@ -119,35 +119,40 @@ If Search disappears, set `explore.navSelectors` to `[]` and push the JSON.
 
 ## Path rules
 
-Paths are normalized by removing the query, the fragment, and a trailing slash (`/` stays `/`). Matching is case-sensitive. Allow rules beat block rules, except the exact Reels feed, which is decided first.
+Paths are normalized by removing the query and the fragment, collapsing repeated slashes (`//reels` becomes `/reels`), lowercasing, and removing a trailing slash (`/` stays `/`). Allow rules beat later block rules. Hardcoded safety paths (login, DMs, Stories, an individual reel or post) are allowed before any configurable feed or id pattern, so `feedPathPattern` cannot be pointed at `/direct`. The literal path `/reels` is still blocked when `blockFeed` is on, before the configurable allow list.
 
 Order in `PathPolicy.swift` and `bridge.js`:
 
 1. If the path is the redirect target, allow (loop protection).
-2. If `reels.blockFeed` and the path matches `feedPathPattern` (`^/reels$`), block.
-3. If `allowIdPaths` is false and the path matches `idPathPattern` (`^/reels/[^/]+$`), block.
-4. If the path matches a safety allow, `allowedPaths`, `allowReelPathPattern`, `allowUserReelPathPattern`, `postPathPattern`, the id pattern when `allowIdPaths` is true, or Explore's always-allow patterns when mode is not `blockAll`, allow.
-5. If `profile.hideReelsTab` and the path matches `^/[^/]+/reels$`, block.
-6. If the path matches an Explore browse pattern, block.
-7. If mode is `blockAll` and the path matches an Explore always-allow pattern, block.
-8. If the path matches `blockedPaths`, block.
-9. Otherwise allow (profiles and unknown account pages).
+2. If the path matches the hardcoded safety list, allow.
+3. If `reels.blockFeed` and the path is `/reels` or matches `feedPathPattern`, block.
+4. If the path is a Reels listing rather than one id (`/reels/audio`, `/reels/audio/<id>`, `/reels/<id>/<extra>`), block.
+5. If `allowIdPaths` is false and the path matches `idPathPattern` (`^/reels/[^/]+$`), block.
+6. If the path matches a safety allow, `allowedPaths`, `allowReelPathPattern`, `allowUserReelPathPattern`, `postPathPattern`, the id pattern when `allowIdPaths` is true, or Explore's always-allow patterns when mode is not `blockAll`, allow.
+7. If `profile.hideReelsTab` and the path matches `^/[^/]+/reels$`, block.
+8. If the path matches an Explore browse pattern, block.
+9. If mode is `blockAll` and the path matches an Explore always-allow pattern, block.
+10. If the path is any other `/explore` URL, block.
+11. If the path matches `blockedPaths`, block.
+12. Otherwise allow (profiles and unknown account pages).
 
-`^/reels$` does not match `/reel/<id>` or `/reels/<id>`. `^/reel/[^/]+$` does not match `/reels`.
+`^/reels$` does not match `/reel/<id>` or `/reels/<id>`. `^/reel/[^/]+$` does not match `/reels`. `/Reels` is the same as `/reels` after lowercasing.
 
 | URL | Result |
 | --- | --- |
 | `/` | Allow. Hide the feed. Stories and nav stay. |
 | `/?variant=following` | Allow. Path is still `/`. Feed stays hidden. |
 | `/reels/` | Block. Redirect home. |
+| `/Reels` and `//reels` | Block. Same path as `/reels` after normalization. |
 | `/reels/<id>/` | Allow and lock (`allowIdPaths` default true). |
+| `/reels/audio/` and `/reels/audio/<id>/` | Block. This is a scrollable audio listing, not one reel. |
 | `/reel/<id>/` | Allow and lock. |
 | `/<username>/reel/<id>/` | Allow and lock. |
 | `/<username>/` | Allow. Profile header, bio, and posts grid. |
 | `/<username>/reels/` | Block. Redirect home (`hideReelsTab` default true). |
 | `/explore/` | Allow, hide the grid (`hideGridKeepSearch`). |
 | `/explore/search/` | Allow. Search stays usable. |
-| `/explore/tags/<tag>/` | Block. Redirect home. |
+| `/explore/<anything else>/` | Block, including tags and locations. |
 | `/stories/<user>/<id>/` | Allow. Not a reel lock. |
 | `/direct/inbox/` | Allow. |
 | `/direct/t/<id>/` | Allow. |
@@ -158,15 +163,15 @@ Order in `PathPolicy.swift` and `bridge.js`:
 
 Scripts are injected at **document start**, **main frame only**. Iframes (captcha, some login widgets) are left alone so sign-in is not redirected. Instagram's UI is the top document. SPA navigations are covered by wrapping `history.pushState` and `history.replaceState` (replaceState does not emit `popstate` by itself), plus `popstate`, `hashchange`, a throttled `MutationObserver` (250 ms, `childList` only), and a 1.5 s interval. Redirects use `location.replace` so the blocked URL is not left in history. After 6 redirects inside 10 seconds the script stops and shows a "Go home" banner.
 
-The native `WKNavigationDelegate` cancels main-frame loads of blocked Instagram paths and loads `https://www.instagram.com/` instead. `decisionHandler` is called once. Subframes are allowed. Non-allowlisted http(s) URLs open in Safari. `target="_blank"` is handled in `WKUIDelegate.createWebViewWith` so the link is not dropped.
+The native `WKNavigationDelegate` cancels main-frame loads of blocked Instagram paths and loads `https://www.instagram.com/` instead. That check is skipped while Restrictions is off, which is the same switch the page script uses. `decisionHandler` is called once. Subframes are allowed. Non-allowlisted http(s) URLs open in Safari. `instagram://` and other custom schemes are cancelled so they do not open the App Store app. `mailto`, `tel`, and `sms` still open outside. `target="_blank"` is handled in `WKUIDelegate.createWebViewWith` so the link is not dropped. If the web content process dies and `webView.url` is nil, the app loads the home URL instead of calling `reload()`.
 
 ### In-app allowlist
 
 These hosts stay in the web view (exact host or a subdomain):
 
-`instagram.com`, `cdninstagram.com`, `facebook.com`, `fbcdn.net`, `facebook.net`, `fb.com`, `fbsbx.com`, `meta.com`, `messenger.com`, `threads.net`.
+`instagram.com`, `cdninstagram.com`, `facebook.com`, `fbcdn.net`, `facebook.net`, `fb.com`, `fbsbx.com`, `meta.com`, `messenger.com`, `threads.net`, plus sign-in hosts `google.com`, `googleapis.com`, `gstatic.com`, `googleusercontent.com`, `apple.com`, and `icloud.com` (so Google and Apple login can return to this web view).
 
-Path rules apply only on `instagram.com` and its subdomains. CDN and Facebook login hosts are not run through the Reels matcher. Any other host opens in Safari.
+Path rules apply only on `instagram.com` and its subdomains. CDN, Facebook, Google, and Apple hosts are not run through the Reels matcher. Any other http(s) host opens in Safari. A redirect target of `//evil.com` is rejected; `location.replace` only receives a same-origin path. `feedPathPattern` and `idPathPattern` are also rejected when they full-match a login, DM, Story, or post path. Selectors may use `>` (a child combinator). `{`, `}`, `<`, and `/*` are rejected in both Swift and the page script. A comma-separated selector is prefixed on every part, so `a, b` does not leak out of `html.insta-home`.
 
 ## Selectors
 
@@ -289,9 +294,9 @@ This block is documentation. It is not the file the app parses. The real files a
 }
 ```
 
-`allowedPaths` in the real file is longer (login, consent, explore search, individual reels). Do not add `^/[^/]+$`. The feed block runs first so `/reels` would still be blocked, but that pattern is how people accidentally fight the rest of the rules. Profiles are allowed by step 9.
+`allowedPaths` in the real file is longer (login, consent, explore search, individual reels). Do not add `^/[^/]+$`. `/reels` is blocked before that allow list, but the pattern still fights the rest of the rules. Profiles are allowed by the last step.
 
-The slider in the top-left opens a sheet: turn restrictions off (hides, redirects, and the reel lock pause so you can inspect the real DOM), reload rules, or reload the page. The switch is stored in `UserDefaults`. It does not store cookies or your password.
+Back and the settings slider sit on the right edge, midway down, so they do not cover the Instagram header. Back calls the web view's history, or loads home when there is nothing to go back to. The edge-swipe back gesture is on as well. The sheet turns restrictions off (native redirects, hides, and the reel lock pause so you can inspect the real DOM), reloads rules, or reloads the page. The switch is stored in `UserDefaults`. It does not store cookies or your password. A cached remote config is kept only for the same app version. After an update, the bundled JSON is used until a fetch succeeds.
 
 ## Workflow failures
 
@@ -313,7 +318,7 @@ The slider in the top-left opens a sheet: turn restrictions off (hides, redirect
 - Search that is mislabeled "Explore" can be hidden until you clear `explore.navSelectors`.
 - If account search results are `article` nodes on `/explore/`, `gridSelectors` can hide them. Clear that list.
 - `/tv/` and live routes are not special-cased. They are allowed because unknown paths are allowed. Say so in `blockedPaths` if you want them redirected.
-- The in-app sheet is a small top-left button so the web view stays full screen. It can overlap Instagram's logo; it does not cover the bottom bar.
+- The back button and the settings button sit on the right edge. They do not cover the bottom bar or the top-left header.
 - Free Apple IDs expire the install every 7 days.
 - This is not a privacy tool. You are still using Instagram, logged in, in a web view.
 

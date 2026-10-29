@@ -7,6 +7,7 @@ enum ConfigError: LocalizedError, Equatable {
     case invalidEnum(String)
     case invalidRedirectTarget
     case invalidSelector(String)
+    case patternBlocksSafety(String)
 
     var errorDescription: String? { userFacing }
 
@@ -21,9 +22,11 @@ enum ConfigError: LocalizedError, Equatable {
         case .invalidEnum(let value):
             return "Unsupported config value: \(Self.truncate(value))"
         case .invalidRedirectTarget:
-            return "Redirect target must be a path and must not be the Reels feed."
+            return "Redirect target must be a same-origin path such as / and must not be the Reels feed."
         case .invalidSelector(let selector):
             return "Unsafe selector: \(Self.truncate(selector))"
+        case .patternBlocksSafety(let pattern):
+            return "This pattern would block login, DMs, Stories, or a post: \(Self.truncate(pattern))"
         }
     }
 
@@ -156,11 +159,18 @@ enum ConfigValidator {
             }
         }
 
-        let target = PathNormalizer.normalize(config.redirect.targetPath)
-        if !target.hasPrefix("/") {
+        let storedTarget = config.redirect.targetPath
+        if !PathNormalizer.isSafeRedirectTarget(storedTarget) {
+            throw ConfigError.invalidRedirectTarget
+        }
+        let target = PathNormalizer.normalize(storedTarget)
+        if !PathNormalizer.isSafeRedirectTarget(target) {
             throw ConfigError.invalidRedirectTarget
         }
         if config.reels.blockFeed {
+            if target == "/reels" {
+                throw ConfigError.invalidRedirectTarget
+            }
             let feed = try NSRegularExpression(pattern: config.reels.feedPathPattern, options: [])
             let range = NSRange(location: 0, length: (target as NSString).length)
             if let match = feed.firstMatch(in: target, options: [], range: range),
@@ -169,6 +179,7 @@ enum ConfigValidator {
                 throw ConfigError.invalidRedirectTarget
             }
         }
+        try rejectEarlyPatternsThatHitSafety(config)
 
         let groups = [
             config.feed.hideSelectors,
@@ -198,7 +209,12 @@ enum ConfigValidator {
             throw ConfigError.invalidSelector(selector)
         }
         let lowered = selector.lowercased()
-        if selector.contains("{") || selector.contains("}") || selector.contains("<") || selector.contains(">") {
+        // `>` is a child combinator and is allowed. `<`, braces, and comments are not.
+        // JS safeSelectors drops the same comment forms, so the two validators agree.
+        if selector.contains("{") || selector.contains("}") || selector.contains("<") {
+            throw ConfigError.invalidSelector(selector)
+        }
+        if selector.contains("/*") || selector.contains("*/") {
             throw ConfigError.invalidSelector(selector)
         }
         if lowered.contains("expression(")
@@ -206,6 +222,25 @@ enum ConfigValidator {
             || lowered.contains("@import")
             || lowered.contains("javascript:") {
             throw ConfigError.invalidSelector(selector)
+        }
+    }
+
+    /// feedPathPattern and idPathPattern run in a slot that used to beat the allow list.
+    /// Reject a pattern that full-matches a login, DM, story, or post path.
+    private static func rejectEarlyPatternsThatHitSafety(_ config: AppConfig) throws {
+        let early = [config.reels.feedPathPattern, config.reels.idPathPattern]
+        for pattern in early {
+            let regex = try NSRegularExpression(pattern: pattern, options: [])
+            for sample in PathPolicy.safetySentinels {
+                let path = PathNormalizer.normalize(sample)
+                let range = NSRange(location: 0, length: (path as NSString).length)
+                guard let match = regex.firstMatch(in: path, options: [], range: range) else {
+                    continue
+                }
+                if match.range.location == 0 && match.range.length == range.length {
+                    throw ConfigError.patternBlocksSafety(pattern)
+                }
+            }
         }
     }
 }
@@ -490,8 +525,12 @@ private extension RedirectConfig {
     init(dto: RedirectDTO?, fallback: RedirectConfig) throws {
         let method = try parseEnum(dto?.method, as: RedirectMethod.self, fallback: fallback.method)
         var target = nonempty(dto?.targetPath) ?? fallback.targetPath
+        target = target.trimmingCharacters(in: .whitespacesAndNewlines)
         if !target.hasPrefix("/") {
             target = "/" + target
+        }
+        if !PathNormalizer.isSafeRedirectTarget(target) {
+            throw ConfigError.invalidRedirectTarget
         }
         target = PathNormalizer.normalize(target)
         let maxRedirects = dto?.maxRedirects ?? fallback.maxRedirects

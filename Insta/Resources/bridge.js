@@ -45,7 +45,21 @@
     "^/p/[^/]+$"
   ];
 
-  var PERMANENT_EVENTS = ["click", "pointerdown", "pointerup", "touchstart", "touchend", "auxclick"];
+  // KEEP IN SYNC with PathPolicy.reelsBrowsePatterns.
+  var REELS_BROWSE_FALLBACK = [
+    "^/reels/audio(?:/.*)?$",
+    "^/reels/[^/]+/.+"
+  ];
+
+  // KEEP IN SYNC with PathPolicy.exploreTreePatterns.
+  var EXPLORE_TREE_FALLBACK = [
+    "^/explore(?:/.*)?$"
+  ];
+
+  // click and auxclick stay non-passive so preventDefault can cancel the link.
+  // touch and pointer listeners are passive so they do not block scrolling.
+  var ACTIVE_EVENTS = ["click", "auxclick"];
+  var PASSIVE_EVENTS = ["pointerdown", "pointerup", "touchstart", "touchend"];
 
   var config = window.__INSTA_CONFIG || {};
   var enabled = window.__INSTA_ENABLED !== false;
@@ -57,6 +71,8 @@
   var slowTimer = null;
   var originalPush = null;
   var originalReplace = null;
+  var selectorCache = Object.create(null);
+  var reelsNavCache = null;
 
   var lock = {
     active: false,
@@ -79,6 +95,8 @@
       window.__INSTA_CONFIG = next;
       config = next;
       regexCache = Object.create(null);
+      selectorCache = Object.create(null);
+      reelsNavCache = null;
       redirectArmed = false;
       didClear = false;
       rebuildStyle();
@@ -118,6 +136,7 @@
     try {
       if (!enabled) {
         if (!didClear) {
+          reelsNavCache = null;
           clearMarks();
           rebuildStyle();
           releaseLock(true);
@@ -126,6 +145,7 @@
         return;
       }
       didClear = false;
+      reelsNavCache = null;
       if (!isInstagramPage()) return;
       maybeRedirect();
       updateHtmlClasses();
@@ -174,6 +194,8 @@
     if (query !== -1) p = p.slice(0, query);
     if (!p) return "/";
     if (p.charAt(0) !== "/") p = "/" + p;
+    while (p.indexOf("//") !== -1) p = p.split("//").join("/");
+    p = p.toLowerCase();
     while (p.length > 1 && p.charAt(p.length - 1) === "/") p = p.slice(0, -1);
     return p;
   }
@@ -255,8 +277,11 @@
     var explore = config.explore || {};
     var profile = config.profile || {};
     if (path === redirectTarget()) return "allow";
+    // Hardcoded safety list, not the remote copy, so a feed pattern cannot steal /direct.
+    if (matchesAny(SAFETY_FALLBACK, path)) return "allow";
     var feedPattern = reels.feedPathPattern || "^/reels$";
-    if (reels.blockFeed !== false && matches(feedPattern, path)) return "block";
+    if (reels.blockFeed !== false && (path === "/reels" || matches(feedPattern, path))) return "block";
+    if (matchesAny(REELS_BROWSE_FALLBACK, path)) return "block";
     var idPattern = reels.idPathPattern || "^/reels/[^/]+$";
     if (reels.allowIdPaths === false && matches(idPattern, path)) return "block";
     if (matchesAny(allowPatterns(), path)) return "allow";
@@ -269,16 +294,27 @@
     if (matchesAny(browse, path)) return "block";
     var mode = explore.mode || "hideGridKeepSearch";
     if (mode === "blockAll" && matchesAny(explore.alwaysAllowPathPatterns, path)) return "block";
+    if (matchesAny(EXPLORE_TREE_FALLBACK, path)) return "block";
     if (matchesAny(config.blockedPaths, path)) return "block";
     return "allow";
   }
 
+  function isSafeRedirectTarget(raw) {
+    if (raw === "/") return true;
+    if (!raw || raw.charAt(0) !== "/") return false;
+    if (raw.charAt(1) === "/") return false;
+    if (raw.indexOf("//") !== -1 || raw.indexOf("\\") !== -1 || raw.indexOf(":") !== -1) return false;
+    if (/\s/.test(raw)) return false;
+    return true;
+  }
+
   function redirectTarget() {
     var raw = (config.redirect && config.redirect.targetPath) || "/";
+    if (!isSafeRedirectTarget(raw)) return "/";
     var target = normalizePath(raw);
+    if (!isSafeRedirectTarget(target)) return "/";
     var feedPattern = (config.reels && config.reels.feedPathPattern) || "^/reels$";
-    if (matches(feedPattern, target)) return "/";
-    if (!target || target.charAt(0) !== "/") return "/";
+    if (target === "/reels" || matches(feedPattern, target)) return "/";
     return target;
   }
 
@@ -402,8 +438,11 @@
 
   function installPermanentInterceptor() {
     var i;
-    for (i = 0; i < PERMANENT_EVENTS.length; i++) {
-      document.addEventListener(PERMANENT_EVENTS[i], onIntercept, { capture: true, passive: false });
+    for (i = 0; i < ACTIVE_EVENTS.length; i++) {
+      document.addEventListener(ACTIVE_EVENTS[i], onIntercept, { capture: true, passive: false });
+    }
+    for (i = 0; i < PASSIVE_EVENTS.length; i++) {
+      document.addEventListener(PASSIVE_EVENTS[i], onIntercept, { capture: true, passive: true });
     }
   }
 
@@ -417,6 +456,13 @@
     return false;
   }
 
+  function blockEvent(event) {
+    if (ACTIVE_EVENTS.indexOf(event.type) !== -1 && event.cancelable) {
+      event.preventDefault();
+    }
+    event.stopImmediatePropagation();
+  }
+
   function onIntercept(event) {
     if (!enabled || !isInstagramPage()) return;
     if (!eventEnabled(event.type)) return;
@@ -425,22 +471,19 @@
       if (anchor) {
         var anchorPath = pathFromHref(anchor.getAttribute("href"));
         if (anchorPath && isProfileReelsPath(anchorPath) && (!config.profile || config.profile.hideReelsTab !== false)) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
+          blockEvent(event);
           redirectToTarget();
           return;
         }
       }
       if (hitsReelsNav(event)) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
+        blockEvent(event);
         return;
       }
       if (anchor) {
         var blockedPath = pathFromHref(anchor.getAttribute("href"));
         if (blockedPath && classify(blockedPath) === "block") {
-          event.preventDefault();
-          event.stopImmediatePropagation();
+          blockEvent(event);
           redirectToTarget();
         }
       }
@@ -541,7 +584,7 @@
     var h;
     for (h = 0; h < hides.length; h++) {
       if (hides[h] === "article") continue;
-      css += "html.insta-home " + hides[h] + "{display:none !important;height:0 !important;max-height:0 !important;overflow:hidden !important;visibility:hidden !important;pointer-events:none !important;}\n";
+      css += scopeSelector("html.insta-home ", hides[h]) + "{display:none !important;height:0 !important;max-height:0 !important;overflow:hidden !important;visibility:hidden !important;pointer-events:none !important;}\n";
     }
     /*
      * Reels nav dim. No pointer-events:none — taps would fall through.
@@ -557,12 +600,77 @@
     var allows = safeSelectors(config.reelLock && config.reelLock.allowScrollSelectors);
     var a;
     for (a = 0; a < allows.length; a++) {
-      css += "[data-insta-locked='1'] " + allows[a] + "{touch-action:pan-y !important;overflow:auto !important;}\n";
+      css += scopeSelector("[data-insta-locked='1'] ", allows[a]) + "{touch-action:pan-y !important;overflow:auto !important;}\n";
     }
     return css;
   }
 
+  // Prefix every comma-separated selector. "a, b" must not become "prefix a, b".
+  function scopeSelector(prefix, selector) {
+    var parts = splitSelectorList(selector);
+    var out = [];
+    var i;
+    for (i = 0; i < parts.length; i++) {
+      var part = parts[i].replace(/^\s+|\s+$/g, "");
+      if (!part) continue;
+      out.push(prefix + part);
+    }
+    return out.join(",");
+  }
+
+  function splitSelectorList(selector) {
+    var parts = [];
+    var buf = "";
+    var square = 0;
+    var paren = 0;
+    var quote = "";
+    var i;
+    for (i = 0; i < selector.length; i++) {
+      var ch = selector.charAt(i);
+      if (quote) {
+        buf += ch;
+        if (ch === "\\" && i + 1 < selector.length) {
+          i += 1;
+          buf += selector.charAt(i);
+          continue;
+        }
+        if (ch === quote) quote = "";
+        continue;
+      }
+      if (ch === "'" || ch === "\"") {
+        quote = ch;
+        buf += ch;
+        continue;
+      }
+      if (ch === "[") square += 1;
+      else if (ch === "]" && square > 0) square -= 1;
+      else if (ch === "(") paren += 1;
+      else if (ch === ")" && paren > 0) paren -= 1;
+      else if (ch === "," && square === 0 && paren === 0) {
+        parts.push(buf);
+        buf = "";
+        continue;
+      }
+      buf += ch;
+    }
+    parts.push(buf);
+    return parts;
+  }
+
   function safeSelectors(list) {
+    var key = selectorCacheKey(list);
+    if (Object.prototype.hasOwnProperty.call(selectorCache, key)) return selectorCache[key];
+    var out = compileSelectors(list);
+    selectorCache[key] = out;
+    return out;
+  }
+
+  function selectorCacheKey(list) {
+    if (!Array.isArray(list)) return "";
+    return list.join("\n");
+  }
+
+  function compileSelectors(list) {
     if (!Array.isArray(list)) return [];
     var out = [];
     var i;
@@ -570,7 +678,8 @@
       var selector = list[i];
       if (typeof selector !== "string") continue;
       if (!selector || selector.length > 300) continue;
-      if (/[{}<>]|expression\s*\(|url\s*\(|@import|\/\*/i.test(selector)) continue;
+      // Same rejects as ConfigValidator.validateSelector, except `>` is allowed.
+      if (/[{}<]|expression\s*\(|url\s*\(|@import|\/\*|\*\//i.test(selector)) continue;
       try {
         document.querySelector(selector);
         out.push(selector);
@@ -752,6 +861,7 @@
    * still sends the feed home.
    */
   function findReelsNavNodes() {
+    if (reelsNavCache) return reelsNavCache;
     var roots = [];
     var rootSelectors = safeSelectors(config.reelsNav && config.reelsNav.navRootSelectors);
     if (rootSelectors.length === 0) rootSelectors = ["nav", "[role='tablist']"];
@@ -806,6 +916,7 @@
         if (isReelsLabeled(labeledNodes[k])) consider(labeledNodes[k]);
       }
     }
+    reelsNavCache = found;
     return found;
   }
 
@@ -882,8 +993,14 @@
         if (nodes[j].getAttribute("data-insta-profile-reels") !== "1") {
           nodes[j].setAttribute("data-insta-profile-reels", "1");
         }
-        if (nodes[j].getAttribute("aria-disabled") !== "true") nodes[j].setAttribute("aria-disabled", "true");
-        if (nodes[j].getAttribute("tabindex") !== "-1") nodes[j].setAttribute("tabindex", "-1");
+        if (nodes[j].getAttribute("aria-disabled") !== "true") {
+          nodes[j].setAttribute("aria-disabled", "true");
+          nodes[j].setAttribute("data-insta-set-aria", "1");
+        }
+        if (nodes[j].getAttribute("tabindex") !== "-1") {
+          nodes[j].setAttribute("tabindex", "-1");
+          nodes[j].setAttribute("data-insta-set-tab", "1");
+        }
       }
     }
   }

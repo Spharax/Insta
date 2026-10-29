@@ -8,6 +8,7 @@ struct InstagramWebView: UIViewRepresentable {
     @Binding var isLoading: Bool
     @Binding var errorMessage: String?
     var reloadToken: Int
+    var backToken: Int
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -33,6 +34,10 @@ struct InstagramWebView: UIViewRepresentable {
                 webView.load(URLRequest(url: home))
             }
         }
+        if context.coordinator.lastBackToken != backToken {
+            context.coordinator.lastBackToken = backToken
+            context.coordinator.goBackOrHome(webView)
+        }
         context.coordinator.pushConfigIfNeeded(webView)
     }
 
@@ -45,6 +50,7 @@ struct InstagramWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var parent: InstagramWebView
         var lastReloadToken: Int
+        var lastBackToken: Int
         var processRestarts = 0
 
         private weak var webView: WKWebView?
@@ -52,7 +58,9 @@ struct InstagramWebView: UIViewRepresentable {
         private var hasCommittedFirstPage = false
         private var didAddHandler = false
         private var bridgeSource: String?
-        private var lastSignature = ""
+        private var cachedJSON: String?
+        private var lastPushedConfig: AppConfig?
+        private var lastPushedEnabled: Bool?
         private var policy: PathPolicy
         private var lastSyntheticKey = ""
         private var lastSyntheticAt = Date.distantPast
@@ -61,6 +69,7 @@ struct InstagramWebView: UIViewRepresentable {
         init(parent: InstagramWebView) {
             self.parent = parent
             self.lastReloadToken = parent.reloadToken
+            self.lastBackToken = parent.backToken
             self.policy = PathPolicy(config: parent.store.config)
             super.init()
         }
@@ -75,8 +84,10 @@ struct InstagramWebView: UIViewRepresentable {
 
             let webView = WKWebView(frame: .zero, configuration: configuration)
             webView.customUserAgent = AppConstants.defaultUserAgent
-            webView.allowsBackForwardNavigationGestures = false
+            webView.allowsBackForwardNavigationGestures = true
+            #if DEBUG
             webView.isInspectable = true
+            #endif
             webView.navigationDelegate = self
             webView.uiDelegate = self
             webView.isOpaque = false
@@ -120,16 +131,30 @@ struct InstagramWebView: UIViewRepresentable {
             webView.load(URLRequest(url: url))
         }
 
-        func pushConfigIfNeeded(_ webView: WKWebView, forceApply: Bool = false) {
-            policy = PathPolicy(config: parent.store.config)
-            guard let payload = try? parent.store.config.javascriptPayload(),
-                  let json = String(data: payload, encoding: .utf8) else {
-                logger.error("Could not encode rules for the page")
+        func goBackOrHome(_ webView: WKWebView) {
+            if webView.canGoBack {
+                webView.goBack()
                 return
             }
+            if let home = URL(string: AppConstants.homeURLString) {
+                webView.load(URLRequest(url: home))
+            }
+        }
+
+        func pushConfigIfNeeded(_ webView: WKWebView, forceApply: Bool = false) {
             let enabled = parent.store.rulesEnabled
-            let signature = (enabled ? "1:" : "0:") + json
-            let unchanged = signature == lastSignature && bridgeSource != nil
+            let configChanged = lastPushedConfig != parent.store.config
+            if configChanged || cachedJSON == nil {
+                policy = PathPolicy(config: parent.store.config)
+                guard let payload = try? parent.store.config.javascriptPayload(),
+                      let json = String(data: payload, encoding: .utf8) else {
+                    logger.error("Could not encode rules for the page")
+                    return
+                }
+                cachedJSON = json
+            }
+            guard let json = cachedJSON else { return }
+            let unchanged = !configChanged && lastPushedEnabled == enabled && bridgeSource != nil
             if !unchanged {
                 let loaded = bridgeSource ?? loadBridge()
                 guard let source = loaded, source.isEmpty == false else {
@@ -137,7 +162,8 @@ struct InstagramWebView: UIViewRepresentable {
                     return
                 }
                 bridgeSource = source
-                lastSignature = signature
+                lastPushedConfig = parent.store.config
+                lastPushedEnabled = enabled
                 installScripts(on: webView, json: json, bridge: source, enabled: enabled)
             }
             if unchanged && !forceApply {
@@ -224,7 +250,11 @@ struct InstagramWebView: UIViewRepresentable {
             processRestarts += 1
             if processRestarts <= 3 {
                 logger.error("Web content process ended; reloading")
-                webView.reload()
+                if webView.url != nil {
+                    webView.reload()
+                } else if let home = URL(string: AppConstants.homeURLString) {
+                    webView.load(URLRequest(url: home))
+                }
             } else {
                 parent.isLoading = false
                 parent.errorMessage = "Instagram's page process stopped repeatedly. Tap Retry."
@@ -279,12 +309,18 @@ struct InstagramWebView: UIViewRepresentable {
                 return .cancel
             }
             if scheme != "http" && scheme != "https" {
-                return .open(url)
+                if scheme == "mailto" || scheme == "tel" || scheme == "sms" {
+                    return .open(url)
+                }
+                return .cancel
             }
             if !HostAllowlist.isAllowed(url.host) {
                 return .open(url)
             }
             if !HostAllowlist.isInstagramSite(url.host) {
+                return .allow
+            }
+            if !parent.store.rulesEnabled {
                 return .allow
             }
             switch policy.decision(forPath: url.path) {
