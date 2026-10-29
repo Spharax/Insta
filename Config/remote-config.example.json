@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "configVersion": "1.0.0",
+  "feed": {
+    "homePath": "/",
+    "hideSelectors": [
+      "article"
+    ],
+    "storiesSelectors": [
+      "a[href^='/stories/']",
+      "a[href*='/stories/']"
+    ],
+    "storiesTrayAncestorDepth": 4,
+    "hideTextSnippets": [
+      "Suggested for you",
+      "You're all caught up",
+      "Suggested accounts"
+    ],
+    "keepSelectors": [
+      "nav",
+      "header",
+      "[role='tablist']"
+    ]
+  },
+  "reelsNav": {
+    "mode": "disabled-visible",
+    "navRootSelectors": [
+      "nav",
+      "[role='tablist']",
+      "[role='navigation']"
+    ],
+    "selectors": [
+      "a[href='/reels/']",
+      "a[href='/reels']"
+    ],
+    "labelMatchers": [
+      "Reels"
+    ],
+    "dimOpacity": 0.4,
+    "interceptEvents": [
+      "click",
+      "pointerdown",
+      "pointerup",
+      "touchstart",
+      "touchend",
+      "auxclick"
+    ]
+  },
+  "explore": {
+    "mode": "hideGridKeepSearch",
+    "navSelectors": [
+      "a[aria-label='Explore']",
+      "[aria-label='Explore']"
+    ],
+    "gridSelectors": [
+      "main article"
+    ],
+    "searchKeepSelectors": [
+      "input[type='search']",
+      "input[aria-label='Search']",
+      "input[aria-label='Search input']",
+      "input[placeholder='Search']",
+      "[role='search']"
+    ],
+    "alwaysAllowPathPatterns": [
+      "^/explore$",
+      "^/explore/search(?:/.*)?$"
+    ],
+    "blockBrowsePathPatterns": [
+      "^/explore/tags(?:/.*)?$",
+      "^/explore/locations(?:/.*)?$"
+    ]
+  },
+  "profile": {
+    "hideReelsTab": true,
+    "reelsTabSelectors": [
+      "a[href$='/reels/']",
+      "a[href$='/reels']"
+    ],
+    "reelsTabPathPattern": "^/[^/]+/reels$"
+  },
+  "redirect": {
+    "targetPath": "/",
+    "method": "replace",
+    "maxRedirects": 6,
+    "windowMs": 10000
+  },
+  "blockedPaths": [
+    "^/reels$"
+  ],
+  "allowedPaths": [
+    "^/$",
+    "^/accounts(?:/.*)?$",
+    "^/challenge(?:/.*)?$",
+    "^/consent(?:/.*)?$",
+    "^/direct(?:/.*)?$",
+    "^/stories(?:/.*)?$",
+    "^/reel/[^/]+$",
+    "^/[^/]+/reel/[^/]+$",
+    "^/reels/[^/]+$",
+    "^/p/[^/]+$",
+    "^/explore$",
+    "^/explore/search(?:/.*)?$",
+    "^/emails(?:/.*)?$",
+    "^/legal(?:/.*)?$",
+    "^/privacy(?:/.*)?$",
+    "^/terms(?:/.*)?$",
+    "^/about(?:/.*)?$",
+    "^/oauth(?:/.*)?$"
+  ],
+  "reels": {
+    "blockFeed": true,
+    "feedPathPattern": "^/reels$",
+    "allowReelPathPattern": "^/reel/[^/]+$",
+    "allowUserReelPathPattern": "^/[^/]+/reel/[^/]+$",
+    "allowIdPaths": true,
+    "idPathPattern": "^/reels/[^/]+$",
+    "postPathPattern": "^/p/[^/]+$"
+  },
+  "reelLock": {
+    "enabled": true,
+    "viewerSelectors": [
+      "[role='dialog']"
+    ],
+    "scrollContainerSelectors": [
+      "[role='dialog']",
+      "[role='presentation']"
+    ],
+    "swipeThresholdPx": 10,
+    "lockWheel": true,
+    "hideNextPrev": true,
+    "nextPrevSelectors": [
+      "[aria-label='Next']",
+      "[aria-label='Previous']",
+      "[aria-label='Next Reel']",
+      "[aria-label='Previous Reel']",
+      "[aria-label='Up Next']",
+      "[aria-label='Next video']",
+      "[aria-label='Previous video']"
+    ],
+    "forceReelIdBack": true,
+    "restoreScrollOnClose": true,
+    "allowScrollSelectors": [
+      "textarea",
+      "input",
+      "form",
+      "[aria-label='Comment']",
+      "[aria-label='Comments']",
+      "[aria-label*='comment']",
+      "[aria-label*='Comment']"
+    ],
+    "videoSelectors": [
+      "video"
+    ]
+  }
+}

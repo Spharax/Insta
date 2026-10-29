@@ -1,0 +1,103 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: List installed Xcode apps
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Diagnostics
+        run: |
+          set -euo pipefail
+          xcode-select -p
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          test -d Insta.xcodeproj
+          test -d Insta.xcodeproj/xcshareddata/xcschemes/Insta.xcscheme
+
+      - name: Archive unsigned iOS app
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcodebuild archive \
+            -project Insta.xcodeproj \
+            -scheme Insta \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/Insta.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+          echo "Archive path listing:"
+          find build/Insta.xcarchive -maxdepth 5 -print
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP="build/Insta.xcarchive/Products/Applications/Insta.app"
+          if [ ! -d "$APP" ]; then
+            echo "App bundle not found at $APP"
+            find build/Insta.xcarchive -name '*.app' -maxdepth 6 -print
+            exit 1
+          fi
+          BINARY="$APP/Insta"
+          if [ ! -f "$BINARY" ]; then
+            echo "Executable not found at $BINARY"
+            find "$APP" -maxdepth 2 -type f -print
+            exit 1
+          fi
+          echo "Mach-O load commands (build version):"
+          otool -l "$BINARY" | awk '/LC_BUILD_VERSION/,/minos/'
+          PLATFORM=$(otool -l "$BINARY" | awk '/LC_BUILD_VERSION/{found=1} found && $1=="platform"{print $2; exit}')
+          echo "Mach-O platform code: ${PLATFORM:-missing}"
+          if [ "${PLATFORM}" != "2" ]; then
+            echo "Expected LC_BUILD_VERSION platform 2 (iOS device), not simulator."
+            exit 1
+          fi
+          rm -rf build/Payload build/Insta.ipa
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/Insta.app
+          (cd build && zip -r -y Insta.ipa Payload)
+          test -f build/Insta.ipa
+          echo "IPA listing:"
+          unzip -l build/Insta.ipa
+          unzip -l build/Insta.ipa | grep -F "Payload/Insta.app/Info.plist"
+          unzip -l build/Insta.ipa | grep -F "Payload/Insta.app/bridge.js"
+          unzip -l build/Insta.ipa | grep -F "Payload/Insta.app/fallback-config.json"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: instagram-stories-only-unsigned-ipa
+          path: build/Insta.ipa
+          if-no-files-found: error
