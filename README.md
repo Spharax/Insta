@@ -302,7 +302,7 @@ Back and the settings slider sit on the right edge, midway down, so they do not 
 
 | Log | What it means |
 | --- | --- |
-| Scheme Insta is not configured | `xcodegen` did not write `Insta.xcodeproj/xcshareddata/xcschemes/Insta.xcscheme`. The workflow checks that path. Confirm `schemes:` in `project.yml` is named `Insta`. |
+| Scheme Insta is not configured | `xcodegen` did not write the file `Insta.xcodeproj/xcshareddata/xcschemes/Insta.xcscheme`. The workflow checks that file with `test -f`. Confirm `schemes:` in `project.yml` is named `Insta`. |
 | `requires a development team` | Signing was still on. The project sets `CODE_SIGNING_ALLOWED` to NO and the archive step passes the same setting. Don't add `-exportArchive`. |
 | `bridge.js` or `fallback-config.json` missing from `unzip -l` | The resource was not in the Copy Bundle Resources phase. Both files are listed under `resources:` in `project.yml`. The log prints the full zip listing just before the grep. |
 | IPA grep cannot find `Payload/Insta.app/Info.plist` | The zip was built from the wrong directory. The script `cd`s into `build` and zips `Payload`, so `Payload` is at the root of the archive. |

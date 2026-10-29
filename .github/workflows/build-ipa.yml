@@ -42,7 +42,7 @@ jobs:
           set -euo pipefail
           xcodegen generate --spec project.yml
           test -d Insta.xcodeproj
-          test -d Insta.xcodeproj/xcshareddata/xcschemes/Insta.xcscheme
+          test -f Insta.xcodeproj/xcshareddata/xcschemes/Insta.xcscheme
 
       - name: Archive unsigned iOS app
         run: |
